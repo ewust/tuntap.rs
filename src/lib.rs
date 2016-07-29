@@ -1,9 +1,9 @@
-use std::fs::{File,OpenOptions};
+use std::fs::OpenOptions;
 use std::default::Default;
 use std::os::unix::io::{AsRawFd,RawFd};
 use libc::{write,socket,AF_INET,AF_INET6,SOCK_DGRAM,c_void,c_char,c_ulong,c_ushort,c_int};
 use libc::{sockaddr_in,sockaddr,in_addr,in6_addr};
-use std::io::{Read,Write,Result,Error};
+use std::io::{Read,Result,Error};
 use std::ffi::CString;
 
 use std::sync::mpsc::{channel,Sender,Receiver};
@@ -195,7 +195,7 @@ impl TunTap {
 		thread::spawn(move || {
 			for packet in my_rx.iter() {
 				let ptr = packet.as_slice().as_ptr();
-				let r = unsafe {
+				let _ = unsafe {
 					write(fd, ptr as *const c_void, packet.len())
 				};
 			}
