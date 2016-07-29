@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{File,OpenOptions};
 use std::default::Default;
 use std::os::unix::io::{AsRawFd,RawFd};
 use libc::{write,socket,AF_INET,AF_INET6,SOCK_DGRAM,c_void,c_char,c_ulong,c_ushort,c_int};
@@ -155,15 +155,16 @@ macro_rules! ioctl(
 );
 
 impl TunTap {
-	pub fn new(flags: TunTapFlags)
+	pub fn new(flags: TunTapFlags, name: &'static str)
 		-> Result<(TunTap,(Sender<Vec<u8>>,Receiver<Vec<u8>>))>
 	{
-        let mut file = try!(File::open("/dev/net/tun"));
+		let mut file = OpenOptions::new().read(true).write(true).open("/dev/net/tun").unwrap();
 
-		let ifr_create = InterfaceRequest16 {
+		let mut ifr_create = InterfaceRequest16 {
 			flags: flags.bits(),
 			..Default::default()
 		};
+		ifr_create.name[0..name.len()].copy_from_slice(&String::from(name).as_bytes());
 		let create = unsafe { ioctl!(file.as_raw_fd(), TUNSETIFF, &ifr_create) };
 		if create.is_err() {
 			return Err(create.unwrap_err());
@@ -194,9 +195,9 @@ impl TunTap {
 		thread::spawn(move || {
 			for packet in my_rx.iter() {
 				let ptr = packet.as_slice().as_ptr();
-				unsafe {
-					write(fd, ptr as *const c_void, packet.len());
-				}
+				let r = unsafe {
+					write(fd, ptr as *const c_void, packet.len())
+				};
 			}
 		});
 
@@ -270,9 +271,9 @@ impl TunTap {
 			return Err(res.unwrap_err());
 		}
 
-        // Can't do in6_addr{ } because it has a private member you can't init
-        let i6addr: in6_addr = unsafe { mem::uninitialized() };
-        //i6addr.s6_addr = [0, 16];
+		// Can't do in6_addr{ } because it has a private member you can't init
+		let i6addr: in6_addr = unsafe { mem::uninitialized() };
+		//i6addr.s6_addr = [0, 16];
 		let mut ifr6 = InterfaceRequestIn6 {
 			addr:      i6addr,
 			prefixlen: 64,

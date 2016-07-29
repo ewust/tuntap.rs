@@ -10,8 +10,8 @@ use std::thread;
 #[test]
 fn it_works() {
 	let flags = IFF_TUN | IFF_NO_PI;
-	let (tun1, (tx1,rx1)) = TunTap::new(flags).unwrap();
-	let (tun2, (tx2,rx2)) = TunTap::new(flags).unwrap();
+	let (tun1, (tx1,rx1)) = TunTap::new(flags, "").unwrap();
+	let (tun2, (tx2,rx2)) = TunTap::new(flags, "").unwrap();
 
 	for (i, tun) in [tun1, tun2].iter().enumerate() {
 		tun.set_owner(1001).unwrap();
