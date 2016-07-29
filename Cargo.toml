@@ -5,3 +5,8 @@ description = "Linux TunTap bindings"
 homepage = "https://github.com/manuels/tuntap.rs"
 license = " GPL-2.0"
 authors = ["Manuel Schölling <manuel.schoelling@gmx.de>"]
+
+[dependencies]
+bitflags = "0.7.0"
+log = "0.3.6"
+libc = "0.2.14"

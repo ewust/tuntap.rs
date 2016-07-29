@@ -1,10 +1,14 @@
 #![allow(dead_code)]
 
-#[macro_use] extern crate log;
+#[macro_use]
+extern crate bitflags;
+
+#[macro_use]
+extern crate log;
 extern crate libc;
 
 use tuntap::{TunTap,IFF_TUN,IFF_TAP,IFF_NO_PI};
-use std::thread::Thread;
+use std::thread;
 
 mod tuntap;
 
@@ -29,13 +33,12 @@ fn it_works() {
 		tun.set_up().unwrap();
 	}
 
-	Thread::spawn(move || {
+	thread::spawn(move || {
 		for packet in rx1.iter() {
 			tx2.send(packet).unwrap();
 		}
-	}).detach();
+	});
 	for packet in rx2.iter() {
 		tx1.send(packet).unwrap();
 	}
 }
-	

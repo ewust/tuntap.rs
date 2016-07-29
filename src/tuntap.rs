@@ -1,18 +1,17 @@
-use std::io::{File, Open, ReadWrite};
+use std::fs::File;
 use std::default::Default;
-use std::os::unix::prelude::{AsRawFd, Fd};
-use libc::funcs::posix88::unistd::write;
-use libc::funcs::bsd43::socket;
-use libc::consts::os::bsd44::{AF_INET,AF_INET6,SOCK_DGRAM};
-use libc::types::common::c95::{c_void};
-use libc::types::os::arch::c95::{c_char,c_ulong,c_ushort,c_int};
-use std::io::{IoResult,IoError};
-use libc::types::os::common::bsd44::{sockaddr_in,sockaddr,in_addr,in6_addr};
+use std::os::unix::io::{AsRawFd,RawFd};
+use libc::{write,socket,AF_INET,AF_INET6,SOCK_DGRAM,c_void,c_char,c_ulong,c_ushort,c_int};
+use libc::{sockaddr_in,sockaddr,in_addr,in6_addr};
+use std::io::{Read,Write,Result,Error};
+use std::ffi::CString;
 
 use std::sync::mpsc::{channel,Sender,Receiver};
-use std::thread::Thread;
+use std::thread;
+use std::mem;
 
-const IFNAMSIZ: uint = 16;
+
+const IFNAMSIZ: usize = 16;
 
 #[repr(C)]
 struct InterfaceRequest16 {
@@ -91,16 +90,16 @@ impl Default for InterfaceRequestSockaddr {
 	}
 }
 
-type Uid = u32;
-type Gid = u32;
+pub type Uid = u32;
+pub type Gid = u32;
 
 extern "C" {
 	fn ioctl(fd: i32, icr: IoCtlRequest, some: c_ulong) -> i32;
-	fn inet_pton(af: c_int, src: *const c_char, dst: &mut ::libc::types::os::common::bsd44::in_addr) -> c_int;
+	fn inet_pton(af: c_int, src: *const c_char, dst: &mut in_addr) -> c_int;
 }
 
 bitflags! {
-	flags TunTapFlags: u16 {
+	pub flags TunTapFlags: u16 {
 		const IFF_UP        = 1<<0,
 		const IFF_RUNNING   = 1<<6,
 		const IFF_TUN       = 0x0001,
@@ -130,9 +129,9 @@ bitflags! {
 	}
 }
 
-#[derive(Copy)]
+#[derive(Copy,Clone)]
 pub struct TunTap {
-	fd:   Fd,
+	fd:   RawFd,
 	sock4: c_int,
 	sock6: c_int,
 	name: [u8; IFNAMSIZ],
@@ -144,7 +143,7 @@ macro_rules! ioctl(
 		let res = ioctl($fd, $flags, ptr);
 
 		if res < 0 {
-			Err(IoError::last_error())
+			Err(Error::last_os_error())
 		} else {
 			Ok(())
 		}
@@ -153,15 +152,9 @@ macro_rules! ioctl(
 
 impl TunTap {
 	pub fn new(flags: TunTapFlags)
-		-> IoResult<(TunTap,(Sender<Vec<u8>>,Receiver<Vec<u8>>))>
+		-> Result<(TunTap,(Sender<Vec<u8>>,Receiver<Vec<u8>>))>
 	{
-		let p = Path::new("/dev/net/tun");
-		let mut file = match File::open_mode(&p, Open, ReadWrite) {
-			Ok(f) => f,
-			Err(e) => {
-				return Err(e);
-			}
-		};
+        let mut file = try!(File::create("/dev/net/tun"));
 
 		let ifr_create = InterfaceRequest16 {
 			flags: flags.bits(),
@@ -175,12 +168,12 @@ impl TunTap {
 		const IPPROTO_IP: c_int = 0;
 		let sock4 = unsafe { socket(AF_INET, SOCK_DGRAM, IPPROTO_IP) };
 		if sock4 < 0 {
-			return Err(IoError::last_error())
+			return Err(Error::last_os_error())
 		}
 
 		let sock6 = unsafe { socket(AF_INET6, SOCK_DGRAM, 0) };
 		if sock6 < 0 {
-			return Err(IoError::last_error())
+			return Err(Error::last_os_error())
 		}
 
 		let fd = file.as_raw_fd();//unsafe { dup(self.file.as_raw_fd()) };
@@ -194,37 +187,37 @@ impl TunTap {
 		let (your_tx,my_rx):(Sender<Vec<u8>>,_) = channel();
 		let (my_tx,your_rx) = channel();
 
-		Thread::spawn(move || {
+		thread::spawn(move || {
 			for packet in my_rx.iter() {
 				let ptr = packet.as_slice().as_ptr();
 				unsafe {
-					write(fd, ptr as *const c_void, packet.len() as u64);
+					write(fd, ptr as *const c_void, packet.len());
 				}
 			}
-		}).detach();
+		});
 
-		Thread::spawn(move || {
+		thread::spawn(move || {
 			loop {
 				let mut packet = Vec::with_capacity(2024);
-				match file.push(2024, &mut packet) {
-					Ok(_) => my_tx.send(packet),
+				let _ = match file.read(&mut packet) {
+					Ok(sz) => my_tx.send(packet[0..sz].to_vec()),
 					_ => break
 				};
 			}
-		}).detach();
+		});
 
 		Ok((tuntap,(your_tx,your_rx)))
 	}
 
-	pub fn set_owner(self, owner: Uid) -> IoResult<()> {
+	pub fn set_owner(self, owner: Uid) -> Result<()> {
 		unsafe { ioctl!(self.fd, TUNSETOWNER, owner as u64) }
 	}
 
-	pub fn set_group(self, group: Gid) -> IoResult<()> {
+	pub fn set_group(self, group: Gid) -> Result<()> {
 		unsafe { ioctl!(self.fd, TUNSETGROUP, group as u64) }
 	}
 
-	pub fn set_mtu(self, mtu: i32) -> IoResult<()> {
+	pub fn set_mtu(self, mtu: i32) -> Result<()> {
 		let ifr = InterfaceRequest32 {
 			name: self.name,
 			flags: mtu,
@@ -233,7 +226,7 @@ impl TunTap {
 	}
 
 	/*
-	pub fn set_mac(self, mac: [u8;6]) -> IoResult<()> {
+	pub fn set_mac(self, mac: [u8;6]) -> Result<()> {
 		// only works on TAPs!
 		// but still fails - why? TODO
 		let mut ifr = InterfaceRequestSockaddr {
@@ -247,23 +240,23 @@ impl TunTap {
 		unsafe { ioctl!(self.sock4, SIOCSIFHWADDR, &ifr) }
 	}*/
 
-	pub fn set_ipv4(self, ipv4: &'static str) -> IoResult<()> {
+	pub fn set_ipv4(self, ipv4: &'static str) -> Result<()> {
 		let mut ifr_ipaddr = InterfaceRequestSockaddrIn {
 			name:     self.name,
 			..Default::default()
 		};
 		ifr_ipaddr.sockaddr.sin_family = AF_INET as c_ushort;
-		let ip = ::std::ffi::CString::from_slice(ipv4.as_bytes());
+		let ip = CString::new(ipv4.as_bytes()).unwrap();
 		let res = unsafe { inet_pton(AF_INET, ip.as_ptr(),
 								&mut ifr_ipaddr.sockaddr.sin_addr) == 1 };
 		if !res {
-			return Err(IoError::last_error());
+			return Err(Error::last_os_error());
 		}
 
 		unsafe { ioctl!(self.sock4, SIOCSIFADDR, &ifr_ipaddr) }
 	}
 
-	pub fn set_ipv6(self, ipv6: &'static str) -> IoResult<()> {
+	pub fn set_ipv6(self, ipv6: &'static str) -> Result<()> {
 		let mut ifr = InterfaceRequest32 {
 			name: self.name,
 			..Default::default()
@@ -273,22 +266,25 @@ impl TunTap {
 			return Err(res.unwrap_err());
 		}
 
+        // Can't do in6_addr{ } because it has a private member you can't init
+        let i6addr: in6_addr = unsafe { mem::uninitialized() };
+        //i6addr.s6_addr = [0, 16];
 		let mut ifr6 = InterfaceRequestIn6 {
-			addr:      in6_addr { s6_addr: [0;8] },
+			addr:      i6addr,
 			prefixlen: 64,
 			ifindex:   ifr.flags,
 		};
 
-		let ip = ::std::ffi::CString::from_slice(ipv6.as_bytes());
+		let ip = CString::new(ipv6.as_bytes()).unwrap();
 		let res = unsafe { inet_pton(AF_INET6, ip.as_ptr(),
 								::std::mem::transmute(&mut (ifr6.addr.s6_addr))) == 1 };
 		if !res {
-			return Err(IoError::last_error());
+			return Err(Error::last_os_error());
 		}
 		unsafe { ioctl!(self.sock6, SIOCSIFADDR, &ifr6) }
 	}
 
-	pub fn set_up(self) -> IoResult<()> {
+	pub fn set_up(self) -> Result<()> {
 		let mut ifr_setup = InterfaceRequest16 {
 			name: self.name,
 			..Default::default()
