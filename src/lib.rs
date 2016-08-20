@@ -1,13 +1,13 @@
-use std::fs::OpenOptions;
+use std::fs::{File,OpenOptions};
 use std::default::Default;
-use std::os::unix::io::{AsRawFd,RawFd};
-use libc::{write,socket,AF_INET,AF_INET6,SOCK_DGRAM,c_void,c_char,c_ulong,c_ushort,c_int};
+use std::os::unix::io::AsRawFd;
+use libc::{socket,AF_INET,AF_INET6,SOCK_DGRAM,c_char,c_ulong,c_ushort,c_int};
 use libc::{sockaddr_in,sockaddr,in_addr,in6_addr};
-use std::io::{Read,Result,Error};
+use std::io::{Read,Write,Result,Error};
 use std::ffi::CString;
 
-use std::sync::mpsc::{channel,Sender,Receiver};
-use std::thread;
+//use std::sync::mpsc::{channel,Sender,Receiver};
+//use std::thread;
 use std::mem;
 
 #[macro_use]
@@ -133,9 +133,10 @@ bitflags! {
 	}
 }
 
-#[derive(Copy,Clone)]
+//#[derive(Copy,Clone)]
 pub struct TunTap {
-	fd:   RawFd,
+	//fd:   RawFd,
+    file: File,
 	sock4: c_int,
 	sock6: c_int,
 	name: [u8; IFNAMSIZ],
@@ -156,9 +157,9 @@ macro_rules! ioctl(
 
 impl TunTap {
 	pub fn new(flags: TunTapFlags, name: &'static str)
-		-> Result<(TunTap,(Sender<Vec<u8>>,Receiver<Vec<u8>>))>
+		-> Result<TunTap>
 	{
-		let mut file = OpenOptions::new().read(true).write(true).open("/dev/net/tun").unwrap();
+		let file = OpenOptions::new().read(true).write(true).open("/dev/net/tun").unwrap();
 
 		let mut ifr_create = InterfaceRequest16 {
 			flags: flags.bits(),
@@ -181,48 +182,39 @@ impl TunTap {
 			return Err(Error::last_os_error())
 		}
 
-		let fd = file.as_raw_fd();//unsafe { dup(self.file.as_raw_fd()) };
+		//let fd = file.as_raw_fd(); //unsafe { dup(self.file.as_raw_fd()) };
 		let tuntap = TunTap {
-			fd: fd,
+			//fd: fd,
+            file: file,
 			sock4: sock4,
 			sock6: sock6,
 			name: ifr_create.name,
 		};
 
-		let (your_tx,my_rx):(Sender<Vec<u8>>,_) = channel();
-		let (my_tx,your_rx) = channel();
+        Ok(tuntap)
+    }
 
-		thread::spawn(move || {
-			for packet in my_rx.iter() {
-				let ptr = packet.as_slice().as_ptr();
-				let _ = unsafe {
-					write(fd, ptr as *const c_void, packet.len())
-				};
-			}
-		});
+    pub fn send(&mut self, data: Vec<u8>) -> Result<usize> {
+        self.file.write(data.as_slice())
+    }
 
-		thread::spawn(move || {
-			loop {
-				let mut packet = Vec::with_capacity(2024);
-				let _ = match file.read(&mut packet) {
-					Ok(sz) => my_tx.send(packet[0..sz].to_vec()),
-					_ => break
-				};
-			}
-		});
+    pub fn recv(&mut self) -> Vec<u8> {
+        let mut packet = Vec::with_capacity(2048);
+        match self.file.read(&mut packet) {
+            Ok(sz) => packet[0..sz].to_vec(),
+            _ => vec![]
+        }
+    }
 
-		Ok((tuntap,(your_tx,your_rx)))
+	pub fn set_owner(&self, owner: Uid) -> Result<()> {
+		unsafe { ioctl!(self.file.as_raw_fd(), TUNSETOWNER, owner as u64) }
 	}
 
-	pub fn set_owner(self, owner: Uid) -> Result<()> {
-		unsafe { ioctl!(self.fd, TUNSETOWNER, owner as u64) }
+	pub fn set_group(&self, group: Gid) -> Result<()> {
+		unsafe { ioctl!(self.file.as_raw_fd(), TUNSETGROUP, group as u64) }
 	}
 
-	pub fn set_group(self, group: Gid) -> Result<()> {
-		unsafe { ioctl!(self.fd, TUNSETGROUP, group as u64) }
-	}
-
-	pub fn set_mtu(self, mtu: i32) -> Result<()> {
+	pub fn set_mtu(&self, mtu: i32) -> Result<()> {
 		let ifr = InterfaceRequest32 {
 			name: self.name,
 			flags: mtu,
@@ -245,7 +237,7 @@ impl TunTap {
 		unsafe { ioctl!(self.sock4, SIOCSIFHWADDR, &ifr) }
 	}*/
 
-	pub fn set_ipv4(self, ipv4: &'static str) -> Result<()> {
+	pub fn set_ipv4(&self, ipv4: &'static str) -> Result<()> {
 		let mut ifr_ipaddr = InterfaceRequestSockaddrIn {
 			name:     self.name,
 			..Default::default()
@@ -261,7 +253,7 @@ impl TunTap {
 		unsafe { ioctl!(self.sock4, SIOCSIFADDR, &ifr_ipaddr) }
 	}
 
-	pub fn set_ipv6(self, ipv6: &'static str) -> Result<()> {
+	pub fn set_ipv6(&self, ipv6: &'static str) -> Result<()> {
 		let mut ifr = InterfaceRequest32 {
 			name: self.name,
 			..Default::default()
@@ -289,7 +281,7 @@ impl TunTap {
 		unsafe { ioctl!(self.sock6, SIOCSIFADDR, &ifr6) }
 	}
 
-	pub fn set_up(self) -> Result<()> {
+	pub fn set_up(&self) -> Result<()> {
 		let mut ifr_setup = InterfaceRequest16 {
 			name: self.name,
 			..Default::default()
