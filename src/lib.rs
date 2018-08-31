@@ -156,7 +156,7 @@ macro_rules! ioctl(
 );
 
 impl TunTap {
-	pub fn new(flags: TunTapFlags, name: &'static str)
+	pub fn new(flags: TunTapFlags, name: &str)
 		-> Result<TunTap>
 	{
 		let file = OpenOptions::new().read(true).write(true).open("/dev/net/tun").unwrap();
